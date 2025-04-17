@@ -2210,7 +2210,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	: _M_ptr(__r._M_ptr), _M_refcount(__r._M_refcount)
 	{ }
 
-      __weak_ptr(__weak_ptr&& __r) noexcept
+      _GLIBCXX26_CONSTEXPR __weak_ptr(__weak_ptr&& __r) noexcept
       : _M_ptr(__r._M_ptr), _M_refcount(std::move(__r._M_refcount))
       { __r._M_ptr = nullptr; }
 
@@ -2328,7 +2328,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
   // 20.7.2.3.6 weak_ptr specialized algorithms.
   template<typename _Tp, _Lock_policy _Lp>
-    inline void
+    _GLIBCXX26_CONSTEXPR inline void
     swap(__weak_ptr<_Tp, _Lp>& __a, __weak_ptr<_Tp, _Lp>& __b) noexcept
     { __a.swap(__b); }
 

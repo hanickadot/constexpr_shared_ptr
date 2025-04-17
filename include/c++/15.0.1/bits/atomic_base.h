@@ -875,15 +875,19 @@ bool ce__atomic_test_and_set(auto *ptr, int memorder)
 	__atomic_store_n(&_M_p, __p, int(__m));
       }
 
-      _GLIBCXX_ALWAYS_INLINE __pointer_type
+      _GLIBCXX26_CONSTEXPR _GLIBCXX_ALWAYS_INLINE __pointer_type
       load(memory_order __m = memory_order_seq_cst) const noexcept
       {
+        if consteval {
+          return _M_p;
+        } else {
 	memory_order __b __attribute__ ((__unused__))
 	  = __m & __memory_order_mask;
 	__glibcxx_assert(__b != memory_order_release);
 	__glibcxx_assert(__b != memory_order_acq_rel);
 
 	return __atomic_load_n(&_M_p, int(__m));
+}
       }
 
       _GLIBCXX_ALWAYS_INLINE __pointer_type
@@ -897,11 +901,16 @@ bool ce__atomic_test_and_set(auto *ptr, int memorder)
 	return __atomic_load_n(&_M_p, int(__m));
       }
 
-      _GLIBCXX_ALWAYS_INLINE __pointer_type
+      _GLIBCXX26_CONSTEXPR _GLIBCXX_ALWAYS_INLINE __pointer_type
       exchange(__pointer_type __p,
 	       memory_order __m = memory_order_seq_cst) noexcept
       {
+        if consteval {
+          std::swap(_M_p, __p);
+          return __p;
+        } else {
 	return __atomic_exchange_n(&_M_p, __p, int(__m));
+        }
       }
 
 
