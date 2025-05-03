@@ -64,6 +64,42 @@ consteval bool atomic_weak_test() {
 
 static_assert(atomic_weak_test());
 
+consteval void fnc(int ** ptr) {
+  *ptr = new int{42};
+}
+
+consteval bool outptr_test() {
+  std::unique_ptr<int> uptr;
+  fnc(std::out_ptr(uptr));
+  
+  if (uptr != nullptr) {
+    return *uptr == 42;
+  } else {
+    return false;
+  }
+}
+
+static_assert(outptr_test());
+
+consteval void fnc2(void ** ptr) {
+  *ptr = new int{42};
+}
+
+
+consteval bool outptr_test2() {
+  std::unique_ptr<int> uptr;
+  fnc2(std::out_ptr(uptr));
+  
+  if (uptr != nullptr) {
+    return *uptr == 42;
+  } else {
+    return false;
+  }
+}
+
+static_assert(outptr_test2());
+
+
 int main(int argc, char *argv[])
 {
   static_assert(__cpp_lib_constexpr_shared_ptr);

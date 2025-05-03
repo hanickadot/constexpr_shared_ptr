@@ -45,6 +45,150 @@ namespace std _GLIBCXX_VISIBILITY(default)
 {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
+  namespace __detail {
+    template <typename Pointer, bool AllowReference> struct void_ptr_storage {
+      union storage_type {
+        Pointer * type_reference;
+        Pointer type_value;
+        void * void_value;
+      };
+      
+      mutable storage_type storage;
+      
+      constexpr void_ptr_storage() noexcept: storage{.type_value{nullptr}} {
+        
+      }
+      
+      constexpr void_ptr_storage(std::nullptr_t) noexcept: storage{.type_value{nullptr}} { }
+      
+      explicit constexpr void_ptr_storage(Pointer & target) noexcept requires (AllowReference): storage{.type_reference{__builtin_addressof(target)}} {
+        if (target != nullptr) {
+          assert((static_cast<bool>(*this)));
+        }
+      }
+      
+      explicit constexpr void_ptr_storage(Pointer target) noexcept: storage{.type_value{target}} {
+        if (target != nullptr) {
+          assert((static_cast<bool>(*this)));
+        }
+        
+      }
+      
+      explicit constexpr void_ptr_storage(void * target) noexcept: storage{.void_value{target}} {
+        if (target != nullptr) {
+          assert((static_cast<bool>(*this)));
+        }
+      }
+      
+      void_ptr_storage(const void_ptr_storage & other) = default;
+      void_ptr_storage(void_ptr_storage && other) noexcept = default;
+      ~void_ptr_storage() = default;
+      
+      consteval bool is_reference() const noexcept {
+        return __builtin_is_within_lifetime(&storage.type_reference);
+      }
+      
+      consteval bool is_pointer() const noexcept {
+        return __builtin_is_within_lifetime(&storage.type_value);
+      }
+      
+      consteval bool is_void() const noexcept {
+        return __builtin_is_within_lifetime(&storage.void_value);
+      }
+      
+      constexpr void_ptr_storage & operator=(std::convertible_to<Pointer> auto ptr) noexcept {
+        storage.type_value = ptr;
+        return *this;
+      }
+      
+      constexpr Pointer * convert_to_pointer(void * ptr) const noexcept {
+        Pointer * out =  __builtin_addressof(const_cast<Pointer &>(storage.type_value = static_cast<Pointer>(ptr)));
+        if (ptr != nullptr) {
+          assert(storage.type_value != nullptr);
+        }
+        return out;
+      } 
+      
+      explicit constexpr operator bool() const noexcept {
+        if consteval {
+          if (is_reference()) {
+            return *storage.type_reference != nullptr;
+          } else if (is_pointer()) {
+            return storage.type_value != nullptr;
+          } else {
+            assert(is_void());
+            return storage.void_value != nullptr;
+          }
+        } else {
+          if constexpr (AllowReference) {
+            return *storage.type_reference != nullptr;
+          } else {
+            return storage.type_value != nullptr;
+          }
+        }
+      }
+      
+      constexpr Pointer * get_type_pointer() const {
+        if consteval {
+          if constexpr (AllowReference) {
+            if (is_reference()) {
+              return storage.type_reference;
+            }
+          }
+          
+          if (is_pointer()) {
+            return __builtin_addressof(storage.type_value);
+          }
+          
+          assert(is_void());
+          return convert_to_pointer(storage.void_value);
+        } else {
+          if constexpr (AllowReference) {
+            return storage.type_reference;
+          } else {
+            return __builtin_addressof(storage.type_value);
+          }
+        }
+      }
+      
+      constexpr void ** convert_to_void(Pointer ptr) const noexcept {
+        void ** out = &const_cast<void *&>(storage.void_value = static_cast<void*>(ptr));
+        if (ptr != nullptr) {
+          assert(storage.void_value != nullptr);
+        }
+        return out;
+      } 
+      
+      constexpr void ** get_void_pointer() const {
+        if consteval {
+          // if we don't have void * active, we need to convert it
+          if constexpr (AllowReference) {
+            if (is_reference()) {
+              return convert_to_void(storage.type_value);
+            }
+          }
+          
+          if (is_pointer()) {
+            return convert_to_void(storage.type_value);
+          }
+          
+          assert(is_void());
+          return __builtin_addressof(storage.void_value);
+        } else {
+          // TODO fix runtime
+          if constexpr (AllowReference) {
+            return static_cast<void **>(static_cast<void *>(storage.type_reference));
+          } else {
+            return static_cast<void **>(static_cast<void *>(__builtin_addressof(storage.type_value)));
+          }
+        }
+      }
+    };
+    
+    struct out_tag_t { };
+    struct inout_tag_t { };
+  }
+
   /// Smart pointer adaptor for functions taking an output pointer parameter.
   /**
    * @tparam _Smart The type of pointer to adapt.
@@ -63,9 +207,10 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 #endif
 
     public:
+      _GLIBCXX26_CONSTEXPR
       explicit
       out_ptr_t(_Smart& __smart, _Args... __args)
-      : _M_impl{__smart, std::forward<_Args>(__args)...}
+      : _M_impl{__detail::out_tag_t{}, __smart, std::forward<_Args>(__args)...}
       {
 	if constexpr (requires { _M_impl._M_out_init(); })
 	  _M_impl._M_out_init();
@@ -75,14 +220,15 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
       ~out_ptr_t() = default;
 
+      _GLIBCXX26_CONSTEXPR
       operator _Pointer*() const noexcept
       { return _M_impl._M_get(); }
 
+      _GLIBCXX26_CONSTEXPR
       operator void**() const noexcept requires (!same_as<_Pointer, void*>)
       {
-	static_assert(is_pointer_v<_Pointer>);
-	_Pointer* __p = *this;
-	return static_cast<void**>(static_cast<void*>(__p));
+        //static_assert(is_pointer_v<_Pointer>);
+        return _M_impl._M_void_get();
       }
 
     private:
@@ -93,13 +239,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	  // This constructor must not modify __s because out_ptr_t and
 	  // inout_ptr_t want to do different things. After construction
 	  // they call _M_out_init() or _M_inout_init() respectively.
-	  _Impl(_Smart& __s, _Args&&... __args)
-	  : _M_smart(__s), _M_args(std::forward<_Args>(__args)...)
-	  { }
-
-	  // Called by out_ptr_t to clear the smart pointer before using it.
-	  void
-	  _M_out_init()
+    _GLIBCXX26_CONSTEXPR
+	  _Impl(__detail::out_tag_t, _Smart& __s, _Args&&... __args) noexcept
+	  : _M_smart(__s), _M_ptr{nullptr}, _M_args(std::forward<_Args>(__args)...)
 	  {
 	    // _GLIBCXX_RESOLVE_LIB_DEFECTS
 	    // 3734. Inconsistency in inout_ptr and out_ptr for empty case
@@ -108,179 +250,65 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	    else
 	      _M_smart = _Smart();
 	  }
-
-	  // Called by inout_ptr_t to copy the smart pointer's value
-	  // to the pointer that is returned from _M_get().
-	  void
-	  _M_inout_init()
-	  { _M_ptr = _M_smart.release(); }
+    
+    _GLIBCXX26_CONSTEXPR
+	  _Impl(__detail::inout_tag_t, _Smart& __s, _Args&&... __args) noexcept
+	  : _M_smart(__s), _M_ptr{__s.release()}, _M_args(std::forward<_Args>(__args)...)
+    { }
 
 	  // The pointer value returned by operator Pointer*().
+    _GLIBCXX26_CONSTEXPR
 	  _Pointer*
-	  _M_get() const
-	  { return __builtin_addressof(const_cast<_Pointer&>(_M_ptr)); }
+	  _M_get() const noexcept
+	  { return _M_ptr.get_type_pointer(); }
+    
+    _GLIBCXX26_CONSTEXPR
+	  void **
+	  _M_void_get() const noexcept
+	  { return _M_ptr.get_void_pointer(); }
 
 	  // Finalize the effects on the smart pointer.
+    _GLIBCXX26_CONSTEXPR
 	  ~_Impl() noexcept(false);
 
 	  _Smart& _M_smart;
-	  [[no_unique_address]] _Pointer _M_ptr{};
+	  __detail::void_ptr_storage<_Pointer, false> _M_ptr;
 	  [[no_unique_address]] tuple<_Args...> _M_args;
 	};
 
-      // Partial specialization for raw pointers.
-      template<typename _Tp>
-	struct _Impl<_Tp*, _Tp*>
-	{
-	  void
-	  _M_out_init()
-	  { _M_p = nullptr; }
-
-	  void
-	  _M_inout_init()
-	  { }
-
-	  _Tp**
-	  _M_get() const
-	  { return __builtin_addressof(const_cast<_Tp*&>(_M_p)); }
-
-	  _Tp*& _M_p;
-	};
-
       // Partial specialization for raw pointers, with conversion.
-      template<typename _Tp, typename _Ptr> requires (!is_same_v<_Ptr, _Tp*>)
+      template<typename _Tp, typename _Ptr> //requires (!is_same_v<_Ptr, _Tp*>)
 	struct _Impl<_Tp*, _Ptr>
 	{
-	  explicit
-	  _Impl(_Tp*& __p)
-	  : _M_p(__p)
+    _GLIBCXX26_CONSTEXPR
+    _Impl(__detail::out_tag_t, _Tp*& __p) noexcept
+	  : _M_p(__p), _M_ptr{nullptr}
+	  { }
+    
+    _GLIBCXX26_CONSTEXPR
+    _Impl(__detail::inout_tag_t, _Tp*& __p) noexcept
+	  : _M_p(__p), _M_ptr{_M_p}
 	  { }
 
-	  void
-	  _M_out_init()
-	  { _M_p = nullptr; }
-
-	  void
-	  _M_inout_init()
-	  { _M_ptr = _M_p; }
-
+    _GLIBCXX26_CONSTEXPR
 	  _Pointer*
-	  _M_get() const
-	  { return __builtin_addressof(const_cast<_Pointer&>(_M_ptr)); }
+	  _M_get() const noexcept
+	  { return _M_ptr.get_type_pointer(); }
+    
+    _GLIBCXX26_CONSTEXPR
+	  void **
+	  _M_void_get() const noexcept
+	  { return _M_ptr.get_void_pointer(); }
 
-	  ~_Impl() { _M_p = static_cast<_Tp*>(_M_ptr); }
+    _GLIBCXX26_CONSTEXPR
+	  ~_Impl() noexcept { 
+      // this will overwrite the pointer
+      _M_p = *_M_ptr.get_type_pointer();
+    }
 
 	  _Tp*& _M_p;
-	  _Pointer _M_ptr{};
+    __detail::void_ptr_storage<_Ptr, false> _M_ptr;
 	};
-
-      // Partial specialization for std::unique_ptr.
-      // This specialization gives direct access to the private member
-      // of the unique_ptr, avoiding the overhead of storing a separate
-      // pointer and then resetting the unique_ptr in the destructor.
-      // FIXME: constrain to only match the primary template,
-      // not program-defined specializations of unique_ptr.
-      template<typename _Tp, typename _Del>
-	struct _Impl<unique_ptr<_Tp, _Del>,
-		     typename unique_ptr<_Tp, _Del>::pointer>
-	{
-	  void
-	  _M_out_init()
-	  { _M_smart.reset(); }
-
-	  _Pointer*
-	  _M_get() const noexcept
-	  { return __builtin_addressof(_M_smart._M_t._M_ptr()); }
-
-	  _Smart& _M_smart;
-	};
-
-      // Partial specialization for std::unique_ptr with replacement deleter.
-      // FIXME: constrain to only match the primary template,
-      // not program-defined specializations of unique_ptr.
-      template<typename _Tp, typename _Del, typename _Del2>
-	struct _Impl<unique_ptr<_Tp, _Del>,
-		     typename unique_ptr<_Tp, _Del>::pointer, _Del2>
-	{
-	  void
-	  _M_out_init()
-	  { _M_smart.reset(); }
-
-	  _Pointer*
-	  _M_get() const noexcept
-	  { return __builtin_addressof(_M_smart._M_t._M_ptr()); }
-
-	  ~_Impl()
-	  {
-	    if (_M_smart.get())
-	      _M_smart._M_t._M_deleter() = std::forward<_Del2>(_M_del);
-	  }
-
-	  _Smart& _M_smart;
-	  [[no_unique_address]] _Del2 _M_del;
-	};
-
-#if _GLIBCXX_HOSTED
-      // Partial specialization for std::shared_ptr.
-      // This specialization gives direct access to the private member
-      // of the shared_ptr, avoiding the overhead of storing a separate
-      // pointer and then resetting the shared_ptr in the destructor.
-      // A new control block is allocated in the constructor, so that if
-      // allocation fails it doesn't throw an exception from the destructor.
-      template<typename _Tp, typename _Del, typename _Alloc>
-	requires (is_base_of_v<__shared_ptr<_Tp>, shared_ptr<_Tp>>)
-	struct _Impl<shared_ptr<_Tp>,
-		     typename shared_ptr<_Tp>::element_type*, _Del, _Alloc>
-	{
-	  _Impl(_Smart& __s, _Del __d, _Alloc __a = _Alloc())
-	  : _M_smart(__s)
-	  {
-	    // We know shared_ptr cannot be used with inout_ptr_t
-	    // so we can do all set up here, instead of in _M_out_init().
-	    _M_smart.reset();
-
-	    // Similar to the shared_ptr(Y*, D, A) constructor, except that if
-	    // the allocation throws we do not need (or want) to call deleter.
-	    typename _Scd::__allocator_type __a2(__a);
-	    auto __mem = __a2.allocate(1);
-	    ::new (__mem) _Scd(nullptr, std::forward<_Del>(__d),
-			       std::forward<_Alloc>(__a));
-	    _M_smart._M_refcount._M_pi = __mem;
-	  }
-
-	  _Pointer*
-	  _M_get() const noexcept
-	  { return __builtin_addressof(_M_smart._M_ptr); }
-
-	  ~_Impl()
-	  {
-	    auto& __pi = _M_smart._M_refcount._M_pi;
-
-	    if (_Sp __ptr = _M_smart.get())
-	      static_cast<_Scd*>(__pi)->_M_impl._M_ptr = __ptr;
-	    else // Destroy the control block manually without invoking deleter.
-	      std::__exchange(__pi, nullptr)->_M_destroy();
-	  }
-
-	  _Smart& _M_smart;
-
-	  using _Sp = typename _Smart::element_type*;
-	  using _Scd = _Sp_counted_deleter<_Sp, decay_t<_Del>,
-					   remove_cvref_t<_Alloc>,
-					   __default_lock_policy>;
-	};
-
-      // Partial specialization for std::shared_ptr, without custom allocator.
-      template<typename _Tp, typename _Del>
-	requires (is_base_of_v<__shared_ptr<_Tp>, shared_ptr<_Tp>>)
-	struct _Impl<shared_ptr<_Tp>,
-		     typename shared_ptr<_Tp>::element_type*, _Del>
-	: _Impl<_Smart, _Pointer, _Del, allocator<void>>
-	{
-	  using _Impl<_Smart, _Pointer, _Del, allocator<void>>::_Impl;
-	};
-#endif
-
       using _Impl_t = _Impl<_Smart, _Pointer, _Args...>;
 
       _Impl_t _M_impl;
@@ -305,26 +333,24 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 #endif
 
     public:
+      _GLIBCXX26_CONSTEXPR
       explicit
       inout_ptr_t(_Smart& __smart, _Args... __args)
-      : _M_impl{__smart, std::forward<_Args>(__args)...}
-      {
-	if constexpr (requires { _M_impl._M_inout_init(); })
-	  _M_impl._M_inout_init();
-      }
+      : _M_impl{__detail::inout_tag_t{}, __smart, std::forward<_Args>(__args)...} { }
 
       inout_ptr_t(const inout_ptr_t&) = delete;
 
       ~inout_ptr_t() = default;
 
+      _GLIBCXX26_CONSTEXPR
       operator _Pointer*() const noexcept
       { return _M_impl._M_get(); }
 
+      _GLIBCXX26_CONSTEXPR
       operator void**() const noexcept requires (!same_as<_Pointer, void*>)
       {
-	static_assert(is_pointer_v<_Pointer>);
-	_Pointer* __p = *this;
-	return static_cast<void**>(static_cast<void*>(__p));
+        static_assert(is_pointer_v<_Pointer>);
+        return _M_impl._M_void_get();
       }
 
     private:
@@ -402,6 +428,7 @@ namespace __detail
    * @headerfile <memory>
    */
   template<typename _Pointer = void, typename _Smart, typename... _Args>
+    _GLIBCXX26_CONSTEXPR
     inline auto
     out_ptr(_Smart& __s, _Args&&... __args)
     {
@@ -423,6 +450,7 @@ namespace __detail
    * @headerfile <memory>
    */
   template<typename _Pointer = void, typename _Smart, typename... _Args>
+    _GLIBCXX26_CONSTEXPR
     inline auto
     inout_ptr(_Smart& __s, _Args&&... __args)
     {
@@ -437,9 +465,10 @@ namespace __detail
   /// @cond undocumented
   template<typename _Smart, typename _Pointer, typename... _Args>
   template<typename _Smart2, typename _Pointer2, typename... _Args2>
+    _GLIBCXX26_CONSTEXPR
     inline
     out_ptr_t<_Smart, _Pointer, _Args...>::
-    _Impl<_Smart2, _Pointer2, _Args2...>::~_Impl()
+    _Impl<_Smart2, _Pointer2, _Args2...>::~_Impl() noexcept(false)
     {
       using _TypeId = decltype(__detail::__pointer_of_or<_Smart, _Pointer>());
       using _Sp = typename _TypeId::type;
@@ -448,7 +477,7 @@ namespace __detail
 	return;
 
       _Smart& __s = _M_smart;
-      _Pointer& __p = _M_ptr;
+      _Pointer& __p = *_M_ptr.get_type_pointer();
 
       auto __reset = [&](auto&&... __args) {
 	if constexpr (__detail::__resettable<_Smart, _Sp, _Args...>)
